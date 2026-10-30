@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    env_file:
+      - .env
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    container_name: go-pet-shop
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=dev
+    ports:
+      - "8080:8080"
+    networks:
+      - monitoring
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "./migrator --migrations-path ./migrations && ./go-pet-shop"]
+
+volumes:
+  postgres_data:
+
+networks:
+  monitoring:
+    driver: bridge
