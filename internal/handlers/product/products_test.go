@@ -2,6 +2,7 @@ package product
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"go-pet-shop/internal/models"
 	"log/slog"
@@ -11,11 +12,11 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi"
+	"github.com/stretchr/testify/assert"
 )
 
 // Get Product - Ready
-func TestGetAllProducts_Success(t *testing.T) {
-	// Мокаем storage — он вернёт один продукт.
+func TestGetAllProducts_Success(t *testing.T) { //200
 	mock := &ProductsMock{
 		GetAllProductsFunc: func(ctx context.Context) ([]models.Product, error) {
 			return []models.Product{
@@ -24,40 +25,51 @@ func TestGetAllProducts_Success(t *testing.T) {
 		},
 	}
 
-	// Создаем HTTP-запрос GET /products
 	req := httptest.NewRequest(http.MethodGet, "/products", nil)
 	w := httptest.NewRecorder()
 
-	// Создаем хендлер с мок-хранилищем
 	handler := New(slog.Default(), mock)
-
-	// Вызываем метод GetAllProducts, который является http.HandlerFunc
 	handler.GetAllProducts(w, req)
 
-	// Проверяем HTTP-код
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
+
+	var got []models.Product
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, []models.Product{{ID: 1, Name: "Dog Food"}}, got)
 }
-func TestGetAllProducts_Error(t *testing.T) {
-	// Мокаем storage — он будет возвращать ошибку
+
+func TestGetAllProducts_Error(t *testing.T) { //500
 	mock := &ProductsMock{
 		GetAllProductsFunc: func(ctx context.Context) ([]models.Product, error) {
 			return nil, errors.New("DB error")
 		},
 	}
 
-	// Создаем запрос
 	req := httptest.NewRequest(http.MethodGet, "/products", nil)
 	w := httptest.NewRecorder()
 
 	handler := New(slog.Default(), mock)
 	handler.GetAllProducts(w, req)
 
-	// Ожидаем HTTP 500
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Internal server error", resp.Error)
+	assert.Equal(t, "Failed to retrieve products", resp.Message)
 }
 
 // =======================
@@ -67,25 +79,38 @@ func TestGetAllProducts_Error(t *testing.T) {
 func TestCreateProduct_Success(t *testing.T) { //200
 	mock := &ProductsMock{
 		CreateProductFunc: func(ctx context.Context, product models.Product) (int, error) {
-			return 1, nil
+			return 0, nil
 		},
 	}
 
 	body := strings.NewReader(`{"Name": "Cat food", "Price": 149, "Stock": 67}`)
 	req := httptest.NewRequest(http.MethodPost, "/products", body)
 	w := httptest.NewRecorder()
-	
+
 	handler := New(slog.Default(), mock)
 	handler.CreateProduct(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
+
+	var resp struct {
+		Status  string         `json:"status"`
+		ID      int            `json:"id"`
+		Product models.Product `json:"product"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Product created successfully", resp.Status)
+	assert.Equal(t, 0, resp.ID)
+	assert.Equal(t, models.Product{Name: "Cat food", Price: 149, Stock: 67}, resp.Product)
 }
 
 func TestCreateProduct_BadRequest(t *testing.T) { //невалидным JSON (400 Bad Request)
 	mock := &ProductsMock{
-		CreateProductFunc: func(ctx context.Context, product models.Product) (int, error){
+		CreateProductFunc: func(ctx context.Context, product models.Product) (int, error) {
 			return 1, nil
 		},
 	}
@@ -100,6 +125,17 @@ func TestCreateProduct_BadRequest(t *testing.T) { //невалидным JSON (4
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Bad request", resp.Error)
+	assert.Equal(t, "Invalid JSON payload", resp.Message)
 }
 
 func TestCreateProduct_Fail(t *testing.T) { // (500 Internal Server Error)
@@ -119,6 +155,17 @@ func TestCreateProduct_Fail(t *testing.T) { // (500 Internal Server Error)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Internal server error", resp.Error)
+	assert.Equal(t, "Failed to create product", resp.Message)
 }
 
 // =======================
@@ -136,10 +183,9 @@ func TestUpdateProduct_Success(t *testing.T) { // (200 OK)
 	req := httptest.NewRequest(http.MethodPut, "/products/{id}", body)
 	w := httptest.NewRecorder()
 
-	// записать в конспект
 	rctx := chi.NewRouteContext() // создаем карман для айдишки
-	rctx.URLParams.Add("id", "1") //кладет айди
-	req = req.WithContext( //через withcontext прикрепляем к запросу
+	rctx.URLParams.Add("id", "0") //кладет айди
+	req = req.WithContext(        //через withcontext прикрепляем к запросу
 		context.WithValue(req.Context(), chi.RouteCtxKey, rctx),
 	)
 
@@ -149,6 +195,19 @@ func TestUpdateProduct_Success(t *testing.T) { // (200 OK)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
+
+	var resp struct {
+		Status  string         `json:"status"`
+		ID      int            `json:"id"`
+		Product models.Product `json:"product"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Product updated successfully", resp.Status)
+	assert.Equal(t, 0, resp.ID)
+	assert.Equal(t, models.Product{Name: "Kitten_Shampoo", Price: 67, Stock: 12}, resp.Product)
 }
 
 func TestUpdateProduct_BadRequest(t *testing.T) { // невалидным JSON (400 Bad Request)
@@ -163,7 +222,7 @@ func TestUpdateProduct_BadRequest(t *testing.T) { // невалидным JSON (
 	w := httptest.NewRecorder()
 
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
+	rctx.URLParams.Add("id", "0")
 	req = req.WithContext(
 		context.WithValue(req.Context(), chi.RouteCtxKey, rctx),
 	)
@@ -174,9 +233,20 @@ func TestUpdateProduct_BadRequest(t *testing.T) { // невалидным JSON (
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Bad request", resp.Error)
+	assert.Equal(t, "Invalid JSON payload", resp.Message)
 }
 
-func TestUpdateProduct_Fail(t *testing.T) {//(500 Internal Server Error)
+func TestUpdateProduct_Fail(t *testing.T) { //(500 Internal Server Error)
 	mock := &ProductsMock{
 		UpdateProductFunc: func(ctx context.Context, product models.Product) error {
 			return errors.New("Db err")
@@ -188,7 +258,7 @@ func TestUpdateProduct_Fail(t *testing.T) {//(500 Internal Server Error)
 	w := httptest.NewRecorder()
 
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
+	rctx.URLParams.Add("id", "0")
 	req = req.WithContext(
 		context.WithValue(req.Context(), chi.RouteCtxKey, rctx),
 	)
@@ -199,6 +269,17 @@ func TestUpdateProduct_Fail(t *testing.T) {//(500 Internal Server Error)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Internal server error", resp.Error)
+	assert.Equal(t, "Failed to update product", resp.Message)
 }
 
 // =======================
@@ -228,9 +309,22 @@ func TestDeleteProduct_Success(t *testing.T) { // (200 OK)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
+
+	var resp struct {
+		Status  string `json:"status"`
+		ID      int    `json:"id"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Product deleted successfully", resp.Status)
+	assert.Equal(t, 1, resp.ID)
+	assert.Equal(t, "Product with ID 1 has been deleted", resp.Message)
 }
 
-func TestDeleteProduct_BadRequest(t *testing.T) { //(400 Bad Request)
+func TestDeleteProduct_BadRequest(t *testing.T) { //(400 Bad Request) // пустое id
 	mock := &ProductsMock{
 		DeleteProductFunc: func(ctx context.Context, id int) error {
 			return nil
@@ -247,6 +341,17 @@ func TestDeleteProduct_BadRequest(t *testing.T) { //(400 Bad Request)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Bad request", resp.Error)
+	assert.Equal(t, "Product ID is required", resp.Message)
 }
 
 func TestDeleteProduct_Fail(t *testing.T) { // (500 Internal Server Error)
@@ -272,4 +377,15 @@ func TestDeleteProduct_Fail(t *testing.T) { // (500 Internal Server Error)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
+
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	assert.Equal(t, "Internal server error", resp.Error)
+	assert.Equal(t, "Failed to delete product", resp.Message)
 }
